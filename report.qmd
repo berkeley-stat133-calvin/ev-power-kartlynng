@@ -8,27 +8,136 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(tidyverse)
+install.packages("janitor")
+library(janitor)
+install.packages("maps")
+library(maps)
+library(dplyr)
+library(readr)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: Which states have the highest % of renewable energy in 2023?
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+renew21 <- read_csv("data/renew-use-2021.csv", show_col_types = FALSE)
+renew22 <- read_csv("data/renew-use-2022.csv", show_col_types = FALSE)
+renew23 <- read_csv("data/renew-use-2023.csv", show_col_types = FALSE)
+total21 <- read_csv("data/total-use-2021.csv", show_col_types = FALSE)
+total22 <- read_csv("data/total-use-2022.csv", show_col_types = FALSE)
+total23 <- read_csv("data/total-use-2023.csv", show_col_types = FALSE)
+ev2023 <- read_csv("data/ev-registrations-by-state-2023.csv", show_col_types = FALSE)
+price <- read_csv("data/av-energy-price-2021-2023.csv", show_col_types = FALSE)
 
+clean_names <- function(df) {
+  df |>
+    rename_with(~ str_to_lower(str_replace_all(., " ", "_")))
+}
+
+renew21 <- clean_names(renew21)
+renew22 <- clean_names(renew22)
+renew23 <- clean_names(renew23)
+
+ev2023 <- ev2023 |>
+    rename(
+        state = `electric vehicle registrations_by_state (2023)`,
+        ev_registrations = ...2
+     ) #rename cols |> 
+    filter(!is.na(state), !state %in% c("STATE")) #remove header rows |>
+    mutate(
+    ev_registrations = str_extract(ev_registrations, "\\d+"), #extract digits
+    ev_registrations = as.numeric(ev_registrations)
+  ) |>
+    select(state, ev_registrations)
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+total21 <- clean_names(total21)
+total22 <- clean_names(total22)
+total23 <- clean_names(total23)
 
+total_all <- bind_rows(
+  total21 |> mutate(year = 2021),
+  total22 |> mutate(year = 2022),
+  total23 |> mutate(year = 2023)
+)
+total_all <- pivot_longer(
+    data = total_all,
+    cols = -c("energy_source", "year"),
+    names_to = "state",
+    values_to = "values"
+) |> mutate(state = toupper(state))
+
+renew_all <- renew_all |>
+  mutate(
+    renewable_use_2021 = str_extract(renewable_use_2021, "\\d+(?:\\.\\d+)?"),
+    renewable_use_2022 = str_extract(renewable_use_2022, "\\d+(?:\\.\\d+)?"),
+    renewable_use_2023 = str_extract(renewable_use_2023, "\\d+(?:\\.\\d+)?")
+  ) |>
+  mutate(
+    across(starts_with("renewable_use_"), as.numeric)
+  )
+#Summarize renew_all
+renew_total <- renew_all |>
+  group_by(state) |>
+  summarize(
+    renewable_use_2021 = sum(renewable_use_2021, na.rm = TRUE),
+    renewable_use_2022 = sum(renewable_use_2022, na.rm = TRUE),
+    renewable_use_2023 = sum(renewable_use_2023, na.rm = TRUE),
+    .groups = "drop"
+  )
+#Summarize total energy per state per year
+total_energy <- total_all |>
+  group_by(state, year) |>
+  summarize(total_energy = sum(values, na.rm = TRUE), .groups = "drop")
+
+#Pivot renewable energy
+renew_long <- renew_total |>
+  pivot_longer(
+    cols = starts_with("renewable_use_"),
+    names_to = "year",
+    names_prefix = "renewable_use_",
+    values_to = "renewable_use"
+  ) |>
+  mutate(year = as.numeric(year))
+
+#Merge total energy, renewable energy, and EV registrations
+energy_stats <- total_energy |>
+  left_join(renew_long, by = c("state", "year")) |>
+  left_join(ev2023, by = "state")
+
+#Analysis:
+energy_stats <- energy_stats |>
+  mutate(
+    pct_renewable = (renewable_use / total_energy) * 100,
+    ev_to_energy_ratio = ifelse(year == 2023, ev_registrations / total_energy, NA)
+  )
+#Top 10 states by pct_renewable
+top_renewable <- energy_stats |>
+  filter(year == 2023) |> 
+  arrange(desc(pct_renewable)) |>
+  select(state, pct_renewable) |>
+  slice_head(n = 10)
+
+energy_stats
 ```
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
-
+ggplot(top_renewable, aes(x = reorder(state, pct_renewable), y = pct_renewable)) +
+  geom_col(fill = "forestgreen") +
+  coord_flip() +
+  labs(
+    title = "Top 10 States by % Renewable Energy (2023)",
+    x = "State",
+    y = "% Renewable Energy"
+  )
 ```
+**Conclusion:** In 2023, South Dakota (SD) isthe leads with 34.8%, followed by Iowa (28.3%) and Maine (27.2%). These three states had the highest proportion of renewable energy relative to total energy use.
